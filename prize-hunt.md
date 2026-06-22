@@ -33,58 +33,149 @@
 
 ---
 
-## Phase 2: 竞赛搜索（并行执行）
+## Phase 2: 竞赛搜索（多层降级策略）
 
-> **关键：用 Agent 工具并行执行多组搜索，大幅提速。**
+> **核心原则：不依赖单一数据获取方式。按优先级逐层尝试，每层获取到数据就跳过下一层。**
 
-按以下分组，并行派发搜索 Agent（每组一个 Agent）：
+并行派发 Agent 执行以下各层。每层内各 Agent 并行，层与层之间也并行（最终合并去重）。
 
-### Agent 1: 国际黑客松平台
-搜索关键词（逐一搜索）：
-- `site:devpost.com hackathon open 2026`
-- `site:mlh.io hackathon 2026`
-- `hackathon 2026 prize money registration`
-- `devpost hackathon open now prize`
+---
 
-### Agent 2: AI/ML 竞赛
-搜索关键词：
-- `site:kaggle.com competition prize 2026`
-- `AI challenge 2026 submit project prize`
-- `machine learning competition 2026 registration`
-- `data science bounty 2026`
+### Layer 1: API/JSON 端点直取（最可靠）
 
-### Agent 3: 开源 Bounty & 企业竞赛
-搜索关键词：
+这些平台有可直接返回 JSON 的端点，用 `curl` 即可获取，无需 JS 渲染。
+
+#### Agent 1: Devpost 黑客松
+```bash
+curl -s "https://devpost.com/api/hackathons?status[]=open&per_page=50&page=1" | head -500
+```
+如果返回 JSON，提取 `hackathons` 数组中的 `title`、`prize_amount`、`submission_period_dates`、`url`。
+
+#### Agent 2: MLH 赛季活动
+```bash
+curl -s "https://mlh.io/seasons/2026/events" -o /dev/null -w "%{http_code}"
+curl -s "https://raw.githubusercontent.com/MLH/mlh-policies/main/seasons/2026.json" 2>/dev/null
+```
+备选：搜索 GitHub 上 `MLH` 官方 repo 的 events 数据文件。
+
+#### Agent 3: Kaggle 竞赛
+```bash
+curl -s "https://www.kaggle.com/api/v1/competitions/list?search=&page=1" 2>/dev/null
+```
+如果返回 401，改用：
+```bash
+curl -s "https://www.kaggle.com/competitions?listOption=active" | grep -oP '"competitionName":"[^"]*"|"deadline":"[^"]*"|"rewardUrl":"[^"]*"' | head -100
+```
+备选：搜索 GitHub 上的 `kaggle-competition` awesome list。
+
+#### Agent 4: 中文竞赛平台 API
+```bash
+# 天池
+curl -s "https://tianchi.aliyun.com/api/competition/list?status=open&pageNo=1&pageSize=20" 2>/dev/null
+
+# DataFountain
+curl -s "https://www.datafountain.cn/api/competitions?status=open&page=1" 2>/dev/null
+```
+如果 API 不可用，尝试抓取页面中的 `<script>` 标签内嵌 JSON（很多 SSR 页面会内嵌数据）。
+
+---
+
+### Layer 2: GitHub 搜索（高度可靠）
+
+GitHub 搜索不受 JS 渲染影响，且能找到大量竞赛相关信息。
+
+#### Agent 5: GitHub 竞赛追踪仓库
+```bash
+# 搜索 awesome-hackathon 类列表
+gh search repos "hackathon 2026" --sort stars --limit 10 --json name,description,url
+
+# 搜索竞赛奖金相关 repo
+gh search repos "prize competition developer 2026" --sort updated --limit 10 --json name,description,url
+
+# 搜索中文竞赛整理
+gh search repos "竞赛 黑客松 2026" --sort stars --limit 5 --json name,description,url
+```
+
+对找到的高价值 repo，读取其 README 获取竞赛列表。
+
+#### Agent 6: GitHub Issue/讨论中的 Bounty
+```bash
+# 搜索带有 bounty 标签的 issue
+gh search issues "bounty label:bounty" --sort created --limit 20 --json title,repository,url,createdAt
+
+# 搜索 open source reward
+gh search issues "reward open source" --sort created --limit 10 --json title,repository,url
+```
+
+---
+
+### Layer 3: WebSearch 补充搜索（如果可用）
+
+> **仅在 Layer 1/2 获取数据不足时执行。先测试 WebSearch 是否可用（搜索一个简单关键词），不可用则跳过整层。**
+
+#### Agent 7: 英文通用搜索
+- `hackathon 2026 prize open registration`
+- `developer competition 2026 prize money`
+- `AI challenge 2026 submit project`
 - `open source bounty program 2026`
-- `github sponsors bounty 2026`
-- `developer competition 2026 enterprise`
-- `tech giant hackathon 2026 prize` (Microsoft, Google, Meta 等)
 
-### Agent 4: 中文竞赛平台
-搜索关键词：
+#### Agent 8: 中文通用搜索
+- `黑客马拉松 2026 报名 奖金`
 - `天池大赛 2026 报名`
-- `黑客马拉松 2026 奖金 报名`
 - `AI竞赛 2026 大模型 比赛`
 - `编程竞赛 2026 奖金`
-- `企业赛 2026 技术大赛 报名`
 
-### Agent 5: Web3 & 区块链（条件触发）
-仅当 Phase 1 发现 Web3/区块链相关技术栈时触发：
-- `web3 hackathon bounty 2026`
-- `ethereum hackathon 2026 prize`
-- `solana hackathon 2026`
-- `blockchain bounty program 2026`
-
-### Agent 6: 领域补充搜索（条件触发）
-根据 Phase 1 的领域标签追加，例如：
-- 前端 → `UI/UX hackathon 2026`、`frontend challenge 2026`
-- 移动 → `mobile app competition 2026`
+#### Agent 9: 领域补充搜索（条件触发）
+根据 Phase 1 领域标签追加：
+- ML/AI → `data science competition 2026`、`kaggle prize 2026`
+- Web3 → `web3 hackathon bounty 2026`
+- 前端 → `UI/UX hackathon 2026`
 - 游戏 → `game jam 2026 prize`
 - 安全 → `CTF competition 2026 prize`
 
-### 每个 Agent 的输出格式
+---
 
-每个搜索 Agent 返回结构化列表，每条包含：
+### Layer 4: 已知常青竞赛数据库（兜底）
+
+> **当以上所有层都获取不到足够数据时，使用此层。这些是每年/每季举办的知名竞赛，基于已知信息生成，用户自行验证链接有效性。**
+
+根据 Phase 1 的领域标签，从以下列表中筛选相关项输出：
+
+**AI/ML 类：**
+- Kaggle Seasonal Competitions（常年有，奖金 $10K-$100K+）
+- ARC Prize（AI 推理能力，$1M+ 奖池）
+- NeurIPS/ICML/CVPR Workshop Challenges（随顶会周期）
+- AIcrowd Challenges（常年有）
+
+**黑客松类：**
+- MLH Season（每年 9 月-次年 8 月，全球 100+ 场）
+- Devpost Featured Hackathons（常年有线上赛）
+- ETHGlobal 系列（Web3，每年多场）
+- HackMIT / PennApps / HackGT 等高校赛（秋季为主）
+
+**开源 Bounty 类：**
+- Google Summer of Code（每年 2 月申请）
+- GitHub Sponsors / IssueHunt（常年有赏金 issue）
+- Gitcoin Grants（Web3，季度性）
+
+**中文平台类：**
+- 天池大赛（阿里，常年有）
+- DataFountain（常年有）
+- 和鲸 Heywhale（常年有）
+- 华为/百度/腾讯 各自的 AI 竞赛（不定期）
+
+**企业赛类：**
+- Microsoft Imagine Cup（年度）
+- Google Solution Challenge（年度）
+- Hack the North（加拿大，年度）
+
+**使用此层时必须在报告中标注：「以下为已知常青竞赛，具体时间和奖金请访问官网确认」**
+
+---
+
+### 每个 Agent 的统一输出格式
+
+每个 Agent 返回结构化列表，每条包含：
 - 比赛名称
 - 主办方
 - 主题领域
@@ -92,11 +183,19 @@
 - 截止日期（`YYYY-MM-DD` 格式，已过期的标注）
 - 报名/详情链接
 - 参赛形式（个人/团队/均可）
-- 数据来源（哪个搜索结果）
+- 数据来源（具体哪个 Layer/Agent/URL）
+- **置信度**（高=API直取 / 中=页面解析 / 低=已知常青）
 
 ### 过滤规则
 
 **排除**：已截止超过 1 周的、仅限特定地区/学校的、无任何奖金或奖励的、链接已失效的
+
+### 搜索完成后
+
+向用户透明报告：
+- 各 Layer 的执行状态（成功/跳过/失败）
+- 每个 Layer 获取到多少条有效竞赛
+- 总共去重后多少条进入匹配分析
 
 ---
 
@@ -189,10 +288,13 @@ tags: [prize-hunt, 竞赛, hackathon]
 
 ## 重要注意事项
 
-- **并行搜索**：Phase 2 的 Agent 必须并行派发，不要串行等待
+- **降级策略**：Layer 1→4 逐层尝试，不是所有层都必须成功。只要有数据进入 Phase 3 即可
+- **并行搜索**：每层内的 Agent 并行派发，不同层之间也可并行
+- **工具可用性检测**：执行 Layer 3 前先测试 WebSearch 是否可用，不可用则跳过
+- **curl 优先**：能用 `curl` 获取的数据不要用 WebFetch，curl 不受域名验证限制
 - **日期用实际值**：`YYYY-MM-DD` 格式，不用相对时间
 - **奖金注明币种**：原始币种 + 换算
 - **链接可访问性**：无法访问的链接在报告中注明
-- **搜索覆盖度**：至少 5 组搜索 Agent，不要只搜一两组就停
+- **置信度标注**：区分 API 直取（高）、页面解析（中）、已知常青（低）
 - **可操作性**：用户看完报告就知道下一步该做什么
-- **透明度**：向用户说明搜索了什么、找到了多少、过滤了什么
+- **透明度**：向用户报告每层搜索的状态和获取数量
