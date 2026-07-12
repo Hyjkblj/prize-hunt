@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prize Hunt"
+  short_description: "Find verified prize competitions matched to your stack."
+  default_prompt: "Use $prize-hunt to find current prize competitions for my GitHub profile or tech stack."
